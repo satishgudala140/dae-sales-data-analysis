@@ -1,0 +1,1072 @@
+# ============================================================
+# SALES DATA ANALYSIS SYSTEM
+# Data Analysis Essentials - Cornerstone Project
+# Google Colab Implementation
+#
+# Features:
+# 1. Excel / CSV upload
+# 2. Data inspection and cleaning
+# 3. Exploratory Data Analysis
+# 4. Sales and profit visualizations
+# 5. Logistic Regression prediction model
+# 6. Model evaluation
+# 7. New order prediction
+# 8. Download cleaned data and results
+# ============================================================
+
+
+# ============================
+# 1. IMPORT REQUIRED LIBRARIES
+# ============================
+
+import io
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from google.colab import files
+from IPython.display import display
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.linear_model import LogisticRegression
+
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    confusion_matrix,
+    classification_report,
+    ConfusionMatrixDisplay
+)
+
+warnings.filterwarnings("ignore")
+
+print("=" * 65)
+print("       SALES DATA ANALYSIS SYSTEM")
+print("       Google Colab Implementation")
+print("=" * 65)
+
+
+# ============================
+# 2. UPLOAD EXCEL OR CSV FILE
+# ============================
+
+print("\nUpload your sales dataset (.xlsx, .xls, or .csv).")
+
+uploaded = files.upload()
+
+if not uploaded:
+    raise ValueError("No file uploaded. Please upload an Excel or CSV file.")
+
+filename = next(iter(uploaded))
+file_bytes = uploaded[filename]
+
+if filename.lower().endswith(".csv"):
+    df = pd.read_csv(io.BytesIO(file_bytes))
+
+elif filename.lower().endswith((".xlsx", ".xls")):
+    df = pd.read_excel(io.BytesIO(file_bytes))
+
+else:
+    raise ValueError(
+        "Unsupported file format. Upload an Excel or CSV file."
+    )
+
+# Normalize column names
+df.columns = [
+    str(column).strip().replace("\n", " ")
+    for column in df.columns
+]
+
+print("\nDataset uploaded successfully!")
+print("File name:", filename)
+
+
+# ============================
+# 3. VALIDATE REQUIRED COLUMNS
+# ============================
+
+# Case-insensitive matching makes column names more flexible.
+column_lookup = {str(c).strip().lower(): c for c in df.columns}
+
+required_columns = [
+    "Sales",
+    "Discount",
+    "Quantity",
+    "Region",
+    "Category",
+    "Payment_Mode",
+    "Profit_Status"
+]
+
+missing_columns = [
+    col for col in required_columns
+    if col.lower() not in column_lookup
+]
+
+if missing_columns:
+    print("\nAvailable columns:")
+    print(df.columns.tolist())
+
+    raise ValueError(
+        "The dataset is missing these required columns: "
+        + ", ".join(missing_columns)
+        + "\nPlease check your Excel/CSV column names."
+    )
+
+# Rename required columns to the names expected by the model.
+rename_map = {
+    column_lookup[col.lower()]: col
+    for col in required_columns
+}
+
+df.rename(columns=rename_map, inplace=True)
+
+
+# ============================
+# 4. DISPLAY DATASET INFORMATION
+# ============================
+
+print("\n" + "=" * 65)
+print("1. DATASET INFORMATION")
+print("=" * 65)
+
+print("\nDataset shape:", df.shape)
+print("Number of rows:", df.shape[0])
+print("Number of columns:", df.shape[1])
+
+print("\nFirst 5 records:")
+display(df.head())
+
+print("\nDataset information:")
+df.info()
+
+print("\nStatistical summary:")
+display(df.describe(include="all").T)
+
+print("\nColumn names:")
+print(df.columns.tolist())
+
+
+# ============================
+# 5. CHECK MISSING VALUES
+# ============================
+
+print("\n" + "=" * 65)
+print("2. MISSING VALUES ANALYSIS")
+print("=" * 65)
+
+missing_report = pd.DataFrame({
+    "Missing_Count": df.isnull().sum(),
+    "Missing_Percentage": (
+        df.isnull().mean() * 100
+    ).round(2)
+})
+
+display(missing_report)
+
+print("\nTotal missing cells:", int(df.isnull().sum().sum()))
+
+
+# ============================
+# 6. CHECK DUPLICATES
+# ============================
+
+print("\n" + "=" * 65)
+print("3. DUPLICATE RECORD ANALYSIS")
+print("=" * 65)
+
+duplicate_rows = int(df.duplicated().sum())
+
+print("Duplicate rows:", duplicate_rows)
+
+if "Order_ID" in df.columns:
+    duplicate_ids = int(
+        df["Order_ID"].dropna().duplicated().sum()
+    )
+    print("Repeated non-missing Order_ID values:", duplicate_ids)
+
+# Remove exact duplicate records.
+df = df.drop_duplicates().copy()
+
+print("Rows after removing exact duplicates:", len(df))
+
+
+# ============================
+# 7. CLEAN AND TRANSFORM DATA
+# ============================
+
+print("\n" + "=" * 65)
+print("4. DATA CLEANING")
+print("=" * 65)
+
+# Standardize the target labels.
+df["Profit_Status"] = (
+    df["Profit_Status"]
+    .astype("string")
+    .str.strip()
+    .str.upper()
+)
+
+# Recognize the two target labels used in the PPT.
+# Y = Profitable; N = Loss.
+df["Profit_Status"] = df["Profit_Status"].replace({
+    "PROFITABLE": "Y",
+    "PROFIT": "Y",
+    "YES": "Y",
+    "LOSS": "N",
+    "LOSS-MAKING": "N",
+    "LOSS MAKING": "N",
+    "NOT PROFITABLE": "N",
+    "NO": "N"
+})
+
+df["Profit_Status"] = df["Profit_Status"].replace(
+    {"": pd.NA, "NAN": pd.NA, "NONE": pd.NA}
+)
+
+# Convert model numeric columns to numeric values.
+numeric_features = ["Sales", "Discount", "Quantity"]
+
+for col in numeric_features:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+# Convert Profit to numeric if available.
+if "Profit" in df.columns:
+    df["Profit"] = pd.to_numeric(
+        df["Profit"], errors="coerce"
+    )
+
+# Parse dates when present.
+if "Order_Date" in df.columns:
+    df["Order_Date"] = pd.to_datetime(
+        df["Order_Date"], errors="coerce"
+    )
+
+    df["OrderMonth"] = df["Order_Date"].dt.month
+    df["OrderYear"] = df["Order_Date"].dt.year
+
+# Do not invent target labels.
+# Rows with missing or invalid targets cannot train the classifier.
+valid_target = df["Profit_Status"].isin(["Y", "N"])
+
+unlabeled_rows = int((~valid_target).sum())
+
+print("Rows without a valid target:", unlabeled_rows)
+
+df_model = df.loc[valid_target].copy()
+
+if df_model.empty:
+    raise ValueError(
+        "No valid Y/N values were found in Profit_Status. "
+        "Check the target column."
+    )
+
+# Check for missing predictor values before imputation.
+print(
+    "Missing predictor cells before imputation:",
+    int(
+        df_model[
+            numeric_features
+            + ["Region", "Category", "Payment_Mode"]
+        ].isnull().sum().sum()
+    )
+)
+
+# Remove rows with missing numerical targets that cannot be
+# recovered without inventing a sales, quantity, or discount value.
+df_model = df_model.dropna(
+    subset=numeric_features
+).copy()
+
+if df_model["Profit_Status"].nunique() < 2:
+    raise ValueError(
+        "The dataset must contain both Y and N target classes "
+        "to train a binary classifier."
+    )
+
+print("\nCleaned model dataset shape:", df_model.shape)
+print("Missing target values:", df_model["Profit_Status"].isnull().sum())
+
+print("\nTarget distribution:")
+display(df_model["Profit_Status"].value_counts().to_frame("Orders"))
+
+print("\nCleaning completed.")
+
+
+# ============================
+# 8. DESCRIPTIVE SALES ANALYSIS
+# ============================
+
+print("\n" + "=" * 65)
+print("5. SALES DATA ANALYSIS")
+print("=" * 65)
+
+for col in numeric_features:
+    df_model[col] = pd.to_numeric(
+        df_model[col], errors="coerce"
+    )
+
+print("\nSales statistics:")
+display(df_model["Sales"].describe().to_frame("Sales"))
+
+print("\nTotal sales:", round(df_model["Sales"].sum(), 2))
+print("Average order sales:", round(df_model["Sales"].mean(), 2))
+print("Maximum order sales:", round(df_model["Sales"].max(), 2))
+print("Minimum order sales:", round(df_model["Sales"].min(), 2))
+
+print("\nTotal quantity sold:", df_model["Quantity"].sum())
+
+if "Profit" in df_model.columns:
+    print("Total recorded profit:", round(df_model["Profit"].sum(), 2))
+    print("Average recorded profit:", round(df_model["Profit"].mean(), 2))
+
+
+# ============================
+# 9. PROFITABILITY ANALYSIS
+# ============================
+
+print("\n" + "=" * 65)
+print("6. PROFITABILITY ANALYSIS")
+print("=" * 65)
+
+df_model["Is_Profit"] = (
+    df_model["Profit_Status"] == "Y"
+).astype(int)
+
+target_counts = df_model["Profit_Status"].value_counts()
+
+profitable_count = int(target_counts.get("Y", 0))
+loss_count = int(target_counts.get("N", 0))
+total_labeled = len(df_model)
+
+profit_rate = (
+    profitable_count / total_labeled * 100
+    if total_labeled else 0
+)
+
+loss_rate = (
+    loss_count / total_labeled * 100
+    if total_labeled else 0
+)
+
+print("Total labeled orders:", total_labeled)
+print("Profitable orders:", profitable_count)
+print("Loss-making orders:", loss_count)
+print(f"Profit rate: {profit_rate:.2f}%")
+print(f"Loss rate: {loss_rate:.2f}%")
+
+
+# ============================
+# 10. PROFIT RATE BY DISCOUNT
+# ============================
+
+print("\n" + "=" * 65)
+print("7. PROFIT RATE BY DISCOUNT")
+print("=" * 65)
+
+discount_analysis = (
+    df_model.groupby("Discount", dropna=False)
+    .agg(
+        Total_Orders=("Is_Profit", "size"),
+        Profitable_Orders=("Is_Profit", "sum"),
+        Average_Sales=("Sales", "mean"),
+        Profit_Rate=("Is_Profit", "mean")
+    )
+)
+
+discount_analysis["Profit_Rate"] *= 100
+
+display(discount_analysis.round(2))
+
+
+# ============================
+# 11. PROFIT RATE BY REGION
+# ============================
+
+print("\n" + "=" * 65)
+print("8. PROFIT RATE BY REGION")
+print("=" * 65)
+
+region_analysis = (
+    df_model.groupby("Region", dropna=False)
+    .agg(
+        Total_Orders=("Is_Profit", "size"),
+        Profitable_Orders=("Is_Profit", "sum"),
+        Total_Sales=("Sales", "sum"),
+        Profit_Rate=("Is_Profit", "mean")
+    )
+)
+
+region_analysis["Profit_Rate"] *= 100
+
+display(region_analysis.round(2))
+
+
+# ============================
+# 12. PROFIT RATE BY CATEGORY
+# ============================
+
+print("\n" + "=" * 65)
+print("9. PROFIT RATE BY CATEGORY")
+print("=" * 65)
+
+category_analysis = (
+    df_model.groupby("Category", dropna=False)
+    .agg(
+        Total_Orders=("Is_Profit", "size"),
+        Profitable_Orders=("Is_Profit", "sum"),
+        Total_Sales=("Sales", "sum"),
+        Profit_Rate=("Is_Profit", "mean")
+    )
+)
+
+category_analysis["Profit_Rate"] *= 100
+
+display(category_analysis.round(2))
+
+
+# ============================
+# 13. VISUALIZATION 1:
+#     PROFIT STATUS DISTRIBUTION
+# ============================
+
+print("\n" + "=" * 65)
+print("10. DATA VISUALIZATION")
+print("=" * 65)
+
+plt.figure(figsize=(7, 5))
+
+bars = plt.bar(
+    ["Profitable (Y)", "Loss (N)"],
+    [
+        profitable_count,
+        loss_count
+    ]
+)
+
+plt.title("Profit Status Distribution")
+plt.xlabel("Profit Status")
+plt.ylabel("Number of Orders")
+
+for bar in bars:
+    height = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2,
+        height,
+        f"{int(height)}",
+        ha="center",
+        va="bottom"
+    )
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================
+# 14. VISUALIZATION 2:
+#     PROFIT RATE BY DISCOUNT
+# ============================
+
+discount_rates = (
+    df_model.groupby("Discount")["Is_Profit"].mean() * 100
+).sort_index()
+
+plt.figure(figsize=(9, 5))
+
+bars = plt.bar(
+    discount_rates.index.astype(str),
+    discount_rates.values
+)
+
+plt.title("Profit Rate by Discount Level")
+plt.xlabel("Discount")
+plt.ylabel("Profit Rate (%)")
+plt.ylim(0, 110)
+
+for bar in bars:
+    height = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2,
+        height + 1,
+        f"{height:.1f}%",
+        ha="center",
+        fontsize=9
+    )
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================
+# 15. VISUALIZATION 3:
+#     PROFIT RATE BY REGION
+# ============================
+
+region_rates = (
+    df_model.groupby("Region")["Is_Profit"].mean() * 100
+).sort_values(ascending=False)
+
+plt.figure(figsize=(9, 5))
+
+bars = plt.bar(
+    region_rates.index.astype(str),
+    region_rates.values
+)
+
+plt.title("Profit Rate by Region")
+plt.xlabel("Region")
+plt.ylabel("Profit Rate (%)")
+plt.ylim(0, 110)
+
+for bar in bars:
+    height = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2,
+        height + 1,
+        f"{height:.1f}%",
+        ha="center"
+    )
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================
+# 16. VISUALIZATION 4:
+#     PROFIT RATE BY CATEGORY
+# ============================
+
+category_rates = (
+    df_model.groupby("Category")["Is_Profit"].mean() * 100
+).sort_values(ascending=False)
+
+plt.figure(figsize=(10, 5))
+
+bars = plt.bar(
+    category_rates.index.astype(str),
+    category_rates.values
+)
+
+plt.title("Profit Rate by Product Category")
+plt.xlabel("Category")
+plt.ylabel("Profit Rate (%)")
+plt.ylim(0, 110)
+plt.xticks(rotation=20, ha="right")
+
+for bar in bars:
+    height = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2,
+        height + 1,
+        f"{height:.1f}%",
+        ha="center",
+        fontsize=9
+    )
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================
+# 17. VISUALIZATION 5:
+#     MONTHLY SALES TREND
+# ============================
+
+if (
+    "Order_Date" in df_model.columns
+    and df_model["Order_Date"].notna().any()
+):
+
+    dated_data = df_model.dropna(
+        subset=["Order_Date"]
+    ).copy()
+
+    dated_data["OrderMonthYear"] = (
+        dated_data["Order_Date"].dt.to_period("M")
+    )
+
+    monthly_sales = (
+        dated_data.groupby("OrderMonthYear")["Sales"]
+        .sum()
+        .sort_index()
+    )
+
+    if not monthly_sales.empty:
+        plt.figure(figsize=(11, 5))
+
+        plt.plot(
+            monthly_sales.index.astype(str),
+            monthly_sales.values,
+            marker="o"
+        )
+
+        plt.title("Monthly Sales Trend")
+        plt.xlabel("Month")
+        plt.ylabel("Total Sales")
+        plt.xticks(rotation=45, ha="right")
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+
+        print("\nMonthly sales summary:")
+        display(monthly_sales.to_frame("Total_Sales"))
+
+else:
+    print(
+        "\nMonthly sales trend skipped: "
+        "a valid Order_Date column is not available."
+    )
+
+
+# ============================
+# 18. PREPARE MACHINE LEARNING
+# ============================
+
+print("\n" + "=" * 65)
+print("11. LOGISTIC REGRESSION MODEL")
+print("=" * 65)
+
+# Use exactly the six predictors listed in the PPT.
+numeric_features = [
+    "Sales",
+    "Discount",
+    "Quantity"
+]
+
+categorical_features = [
+    "Region",
+    "Category",
+    "Payment_Mode"
+]
+
+feature_columns = numeric_features + categorical_features
+
+# Profit is deliberately NOT used as a predictor.
+X = df_model[feature_columns].copy()
+
+# Y = profitable, N = loss.
+y = (
+    df_model["Profit_Status"] == "Y"
+).astype(int)
+
+# Remove rows where all target classes cannot be represented
+# in the train/test split.
+class_counts = y.value_counts()
+
+if len(class_counts) != 2 or class_counts.min() < 2:
+    raise ValueError(
+        "At least two records from each target class are required "
+        "for stratified train/test evaluation."
+    )
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+
+print("Total modeling records:", len(X))
+print("Training records:", len(X_train))
+print("Testing records:", len(X_test))
+
+
+# ============================
+# 19. PREPROCESSING PIPELINE
+# ============================
+
+numeric_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+categorical_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("numeric", numeric_transformer, numeric_features),
+        ("categorical", categorical_transformer,
+         categorical_features)
+    ]
+)
+
+model = Pipeline(steps=[
+    ("preprocessor", preprocessor),
+    ("classifier", LogisticRegression(max_iter=1000))
+])
+
+
+# ============================
+# 20. TRAIN THE MODEL
+# ============================
+
+model.fit(X_train, y_train)
+
+print("\nLogistic Regression model trained successfully!")
+
+
+# ============================
+# 21. PREDICT TEST RESULTS
+# ============================
+
+y_pred = model.predict(X_test)
+
+y_probability = model.predict_proba(X_test)[:, 1]
+
+
+# ============================
+# 22. EVALUATE MODEL PERFORMANCE
+# ============================
+
+print("\n" + "=" * 65)
+print("12. MODEL EVALUATION")
+print("=" * 65)
+
+accuracy = accuracy_score(y_test, y_pred)
+
+precision = precision_score(
+    y_test, y_pred, zero_division=0
+)
+
+recall = recall_score(
+    y_test, y_pred, zero_division=0
+)
+
+f1 = f1_score(
+    y_test, y_pred, zero_division=0
+)
+
+print(f"Accuracy : {accuracy * 100:.2f}%")
+print(f"Precision: {precision * 100:.2f}%")
+print(f"Recall   : {recall * 100:.2f}%")
+print(f"F1 Score : {f1 * 100:.2f}%")
+
+print("\nClassification Report:")
+
+print(
+    classification_report(
+        y_test,
+        y_pred,
+        labels=[0, 1],
+        target_names=["Loss (N)", "Profitable (Y)"],
+        zero_division=0
+    )
+)
+
+
+# ============================
+# 23. VISUALIZATION 6:
+#     CONFUSION MATRIX
+# ============================
+
+cm = confusion_matrix(
+    y_test,
+    y_pred,
+    labels=[0, 1]
+)
+
+display(
+    pd.DataFrame(
+        cm,
+        index=["Actual Loss (N)", "Actual Profit (Y)"],
+        columns=["Predicted Loss (N)", "Predicted Profit (Y)"]
+    )
+)
+
+disp = ConfusionMatrixDisplay(
+    confusion_matrix=cm,
+    display_labels=["Loss (N)", "Profitable (Y)"]
+)
+
+disp.plot(values_format="d")
+
+plt.title("Logistic Regression Confusion Matrix")
+plt.tight_layout()
+plt.show()
+
+
+# ============================
+# 24. VISUALIZATION 7:
+#     MODEL METRICS
+# ============================
+
+metrics = pd.Series({
+    "Accuracy": accuracy * 100,
+    "Precision": precision * 100,
+    "Recall": recall * 100,
+    "F1 Score": f1 * 100
+})
+
+plt.figure(figsize=(8, 5))
+
+bars = plt.bar(
+    metrics.index,
+    metrics.values
+)
+
+plt.title("Logistic Regression Performance Metrics")
+plt.xlabel("Metric")
+plt.ylabel("Score (%)")
+plt.ylim(0, 110)
+
+for bar in bars:
+    height = bar.get_height()
+
+    plt.text(
+        bar.get_x() + bar.get_width() / 2,
+        height + 1,
+        f"{height:.2f}%",
+        ha="center"
+    )
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================
+# 25. PREDICT A NEW ORDER
+# ============================
+
+print("\n" + "=" * 65)
+print("13. NEW ORDER PROFITABILITY PREDICTION")
+print("=" * 65)
+
+print(
+    "Enter a new order using the fields below. "
+    "Available categories are taken from your dataset."
+)
+
+def get_numeric_input(prompt, minimum=None, maximum=None):
+    while True:
+        try:
+            value = float(input(prompt))
+
+            if not np.isfinite(value):
+                print("Please enter a finite number.")
+                continue
+
+            if minimum is not None and value < minimum:
+                print(f"Value must be at least {minimum}.")
+                continue
+
+            if maximum is not None and value > maximum:
+                print(f"Value must be at most {maximum}.")
+                continue
+
+            return value
+
+        except ValueError:
+            print("Please enter a valid number.")
+
+
+def get_category_input(prompt, column):
+    available = sorted(
+        df_model[column].dropna().astype(str).unique().tolist()
+    )
+
+    if not available:
+        raise ValueError(
+            f"No valid values available for {column}."
+        )
+
+    print(f"\nAvailable {column} values:")
+    print(", ".join(available))
+
+    while True:
+        value = input(prompt).strip()
+
+        if value in available:
+            return value
+
+        print("Choose a value from the displayed list.")
+
+
+new_sales = get_numeric_input(
+    "\nEnter Sales amount: ",
+    minimum=0
+)
+
+new_discount = get_numeric_input(
+    "Enter Discount (same units as your dataset): ",
+    minimum=0,
+    maximum=100
+)
+
+new_quantity = get_numeric_input(
+    "Enter Quantity: ",
+    minimum=0
+)
+
+new_region = get_category_input(
+    "Enter Region: ",
+    "Region"
+)
+
+new_category = get_category_input(
+    "Enter Category: ",
+    "Category"
+)
+
+new_payment = get_category_input(
+    "Enter Payment_Mode: ",
+    "Payment_Mode"
+)
+
+new_order = pd.DataFrame([{
+    "Sales": new_sales,
+    "Discount": new_discount,
+    "Quantity": new_quantity,
+    "Region": new_region,
+    "Category": new_category,
+    "Payment_Mode": new_payment
+}])
+
+prediction = int(model.predict(new_order)[0])
+
+probability = float(
+    model.predict_proba(new_order)[0][1]
+)
+
+print("\n" + "=" * 65)
+print("PREDICTION RESULT")
+print("=" * 65)
+
+if prediction == 1:
+    print("Predicted status: PROFITABLE (Y)")
+else:
+    print("Predicted status: LOSS (N)")
+
+print(f"Estimated probability of profitability: {probability * 100:.2f}%")
+
+print(
+    "\nNote: This is a model estimate based on historical patterns, "
+    "not a guarantee of actual profit."
+)
+
+
+# ============================
+# 26. CREATE CLEANED DATASET
+# ============================
+
+print("\n" + "=" * 65)
+print("14. EXPORT CLEANED DATA")
+print("=" * 65)
+
+cleaned_output = df_model.copy()
+
+cleaned_output["Predicted_Profit_Status"] = np.where(
+    model.predict(cleaned_output[feature_columns]) == 1,
+    "Y",
+    "N"
+)
+
+cleaned_output["Predicted_Profit_Probability"] = (
+    model.predict_proba(cleaned_output[feature_columns])[:, 1]
+)
+
+cleaned_filename = "Cleaned_Sales_Data.xlsx"
+
+cleaned_output.to_excel(
+    cleaned_filename,
+    index=False
+)
+
+print("Cleaned dataset created:", cleaned_filename)
+
+
+# ============================
+# 27. EXPORT ANALYSIS REPORT
+# ============================
+
+report_filename = "Sales_Data_Analysis_Report.xlsx"
+
+with pd.ExcelWriter(report_filename, engine="openpyxl") as writer:
+
+    df_model.to_excel(
+        writer,
+        sheet_name="Cleaned_Data",
+        index=False
+    )
+
+    missing_report.to_excel(
+        writer,
+        sheet_name="Missing_Values"
+    )
+
+    discount_analysis.to_excel(
+        writer,
+        sheet_name="Discount_Analysis"
+    )
+
+    region_analysis.to_excel(
+        writer,
+        sheet_name="Region_Analysis"
+    )
+
+    category_analysis.to_excel(
+        writer,
+        sheet_name="Category_Analysis"
+    )
+
+    pd.DataFrame({
+        "Metric": [
+            "Accuracy",
+            "Precision",
+            "Recall",
+            "F1 Score",
+            "Training Records",
+            "Testing Records",
+            "Total Labeled Records",
+            "Profitable Orders",
+            "Loss-Making Orders",
+            "Profit Rate (%)"
+        ],
+        "Value": [
+            accuracy,
+            precision,
+            recall,
+            f1,
+            len(X_train),
+            len(X_test),
+            total_labeled,
+            profitable_count,
+            loss_count,
+            profit_rate
+        ]
+    }).to_excel(
+        writer,
+        sheet_name="Model_Evaluation",
+        index=False
+    )
+
+print("Analysis report created:", report_filename)
+
+
+# ============================
+# 28. DOWNLOAD RESULTS
+# ============================
+
+print("\n" + "=" * 65)
+print("15. ANALYSIS COMPLETED")
+print("=" * 65)
+
+print("Your sales data analysis is complete.")
+print("Two Excel files are ready for download:")
+print("1. Cleaned_Sales_Data.xlsx")
+print("2. Sales_Data_Analysis_Report.xlsx")
+
+files.download(cleaned_filename)
+files.download(report_filename)
+
+print("\nThank you for using the Sales Data Analysis System!")
